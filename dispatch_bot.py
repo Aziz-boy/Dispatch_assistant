@@ -1,6 +1,6 @@
 import os
 import pdfplumber
-from openai import OpenAI
+from openai import OpenAI  # Changed this line
 from telegram import Update
 from dotenv import load_dotenv
 from telegram.ext import (
@@ -93,13 +93,17 @@ RATE CONFIRMATION TEXT:
 {text}
 """
 
-    response = client.responses.create(
+    # Fixed the API call
+    response = client.chat.completions.create(
         model="gpt-4o-mini",
-        input=prompt,
+        messages=[
+            {"role": "system", "content": "You are an expert logistics dispatcher assistant."},
+            {"role": "user", "content": prompt}
+        ],
         temperature=0.2,
     )
 
-    return response.output_text.strip()
+    return response.choices[0].message.content.strip()
 
 # -------- TELEGRAM HANDLERS ----------
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
