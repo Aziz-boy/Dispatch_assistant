@@ -2,8 +2,7 @@ services:
   - type: web
     name: dispatch-assistant-bot
     env: python
-    region: oregon
-    plan: free
+    runtime: python-3.11  # Changed from python-3.9 to python-3.11
     buildCommand: pip install -r requirements.txt
     startCommand: python dispatch_bot.py
     envVars:
@@ -11,5 +10,3 @@ services:
         sync: false
       - key: OPENAI_API_KEY
         sync: false
-      - key: PYTHON_VERSION
-        value: 3.9.0
