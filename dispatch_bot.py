@@ -1,6 +1,6 @@
 import os
 import pdfplumber
-from openai import OpenAI  # Changed this line
+from openai import OpenAI
 from telegram import Update
 from dotenv import load_dotenv
 from telegram.ext import (
@@ -10,6 +10,8 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
+from threading import Thread
+from flask import Flask
 
 load_dotenv()
 
@@ -18,6 +20,17 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 # Initialize OpenAI client
 client = OpenAI(api_key=OPENAI_API_KEY)
+
+# Flask app for health check
+flask_app = Flask(__name__)
+
+@flask_app.route('/')
+def home():
+    return '🤖 Dispatch Bot is running!', 200
+
+@flask_app.route('/health')
+def health():
+    return 'OK', 200
 
 # -------- START COMMAND ----------
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -93,7 +106,6 @@ RATE CONFIRMATION TEXT:
 {text}
 """
 
-    # Fixed the API call
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
@@ -132,16 +144,26 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await file.download_to_drive(file_path)
 
     try:
-        # Use OCR if needed (optional: you can integrate pytesseract here)
-        # For now, we just tell user it's received
         await update.message.reply_text("📷 Image received. OCR extraction not implemented yet. Send as PDF for full parsing.")
     finally:
         os.remove(file_path)
+        
+# -------- RUN FLASK IN BACKGROUND THREAD ----------
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    flask_app.run(host='0.0.0.0', port=port, use_reloader=False)
 
 # -------- MAIN ENTRY POINT ----------
 if __name__ == "__main__":
+    # Run Flask in a separate thread
+    flask_thread = Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    
+    print("🌐 Flask server started on port 10000")
+    
+    # Run bot in MAIN thread
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-
+    
     # Handlers
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(MessageHandler(filters.Document.PDF, handle_document))

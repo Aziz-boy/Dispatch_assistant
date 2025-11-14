@@ -1,5 +1,5 @@
 services:
-  - type: worker  # Changed from 'web' to 'worker'
+  - type: web
     name: dispatch-assistant-bot
     env: python
     runtime: python-3.11

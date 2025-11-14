@@ -3,3 +3,4 @@ openai>=1.0.0
 pdfplumber
 python-dotenv
 aiohttp>=3.9.0
+flask
