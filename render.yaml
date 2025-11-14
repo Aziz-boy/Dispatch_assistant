@@ -1,8 +1,8 @@
 services:
-  - type: web
+  - type: worker  # Changed from 'web' to 'worker'
     name: dispatch-assistant-bot
     env: python
-    runtime: python-3.11  # Changed from python-3.9 to python-3.11
+    runtime: python-3.11
     buildCommand: pip install -r requirements.txt
     startCommand: python dispatch_bot.py
     envVars:
