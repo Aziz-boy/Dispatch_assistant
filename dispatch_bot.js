@@ -7,9 +7,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import pdfParse from 'pdf-parse';
 import Tesseract from 'tesseract.js';
-import { createWorker } from 'tesseract.js';
-import { fromPath } from 'pdf2pic';
-import { PDFDocument } from 'pdf-lib';
+import pdf2img from 'pdf2img';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -55,9 +53,11 @@ Need help? Type /help`;
 // -------- OCR FOR IMAGES ----------
 async function extractTextFromImage(imagePath) {
   try {
-    const worker = await createWorker('eng');
-    const { data: { text } } = await worker.recognize(imagePath);
-    await worker.terminate();
+    console.log(`Starting OCR on: ${imagePath}`);
+    const { data: { text } } = await Tesseract.recognize(imagePath, 'eng', {
+      logger: info => console.log(info)
+    });
+    console.log(`OCR completed. Text length: ${text.length}`);
     return text.trim();
   } catch (error) {
     console.error('OCR Error:', error);
@@ -68,9 +68,12 @@ async function extractTextFromImage(imagePath) {
 // -------- PDF TEXT EXTRACTION ----------
 async function extractTextFromPDF(pdfPath) {
   try {
+    console.log('Attempting to extract text from PDF...');
     const dataBuffer = fs.readFileSync(pdfPath);
     const data = await pdfParse(dataBuffer);
     const text = data.text.trim();
+    
+    console.log(`Extracted text length: ${text.length}`);
     
     // If very little text was extracted, it's likely an image-based PDF
     if (text.length < 100) {
@@ -81,6 +84,7 @@ async function extractTextFromPDF(pdfPath) {
     return text;
   } catch (error) {
     console.error('PDF Parse Error:', error);
+    console.log('Falling back to OCR...');
     return await extractTextFromPDFWithOCR(pdfPath);
   }
 }
@@ -88,49 +92,54 @@ async function extractTextFromPDF(pdfPath) {
 // -------- PDF OCR EXTRACTION ----------
 async function extractTextFromPDFWithOCR(pdfPath) {
   try {
-    const options = {
-      density: 200,
-      saveFilename: 'temp_page',
-      savePath: './temp',
-      format: 'png',
-      width: 2000,
-      height: 2000
-    };
+    console.log('Converting PDF pages to PNG...');
     
     // Create temp directory if it doesn't exist
     if (!fs.existsSync('./temp')) {
       fs.mkdirSync('./temp');
     }
     
-    const convert = fromPath(pdfPath, options);
-    const dataBuffer = fs.readFileSync(pdfPath);
-    const pdfDoc = await PDFDocument.load(dataBuffer);
-    const pageCount = pdfDoc.getPageCount();
+    // Convert PDF to images using pdf2img
+    const result = await new Promise((resolve, reject) => {
+      pdf2img.setOptions({
+        type: 'png',
+        size: 2000,
+        density: 300,
+        outputdir: './temp',
+        outputname: 'page',
+        page: null
+      });
+      
+      pdf2img.convert(pdfPath, (err, info) => {
+        if (err) reject(err);
+        else resolve(info);
+      });
+    });
+    
+    console.log(`Converted ${result.length} pages to PNG`);
     
     let fullText = '';
     
-    for (let i = 1; i <= pageCount; i++) {
+    // Process each page with OCR
+    for (let i = 0; i < result.length; i++) {
       try {
-        const pageImage = await convert(i, { responseType: 'image' });
-        const imagePath = pageImage.path;
+        const imagePath = result[i].path;
+        console.log(`Processing page ${i + 1} with OCR: ${imagePath}`);
         
+        // Extract text using OCR
         const pageText = await extractTextFromImage(imagePath);
-        fullText += `\n--- Page ${i} ---\n${pageText}\n`;
+        fullText += `\n--- Page ${i + 1} ---\n${pageText}\n`;
         
         // Clean up temp image
         if (fs.existsSync(imagePath)) {
           fs.unlinkSync(imagePath);
         }
       } catch (err) {
-        console.error(`Error processing page ${i}:`, err);
+        console.error(`Error processing page ${i + 1}:`, err);
       }
     }
     
-    // Clean up temp directory
-    if (fs.existsSync('./temp')) {
-      fs.rmSync('./temp', { recursive: true, force: true });
-    }
-    
+    console.log(`Total OCR text length: ${fullText.length}`);
     return fullText;
   } catch (error) {
     console.error('OCR PDF Error:', error);
@@ -140,6 +149,12 @@ async function extractTextFromPDFWithOCR(pdfPath) {
 
 // -------- OPENAI DISPATCH EXTRACTION ----------
 async function extractDispatchInfoWithAI(text) {
+  console.log('=== SENDING TO AI ===');
+  console.log('Text length:', text.length);
+  console.log('First 500 characters of text:');
+  console.log(text.substring(0, 500));
+  console.log('=====================');
+  
   const prompt = `You are an expert logistics dispatcher bot.
 
 Read the rate confirmation text below and extract the following fields:
@@ -189,6 +204,8 @@ If any field is missing, write "Not found" but **keep the format identical**.
 RATE CONFIRMATION TEXT:
 ${text}`;
 
+  console.log('Calling OpenAI API...');
+  
   const response = await openai.chat.completions.create({
     model: 'gpt-4o-mini',
     messages: [
@@ -198,7 +215,13 @@ ${text}`;
     temperature: 0.2,
   });
 
-  return response.choices[0].message.content.trim();
+  const result = response.choices[0].message.content.trim();
+  
+  console.log('=== AI RESPONSE ===');
+  console.log(result);
+  console.log('===================');
+
+  return result;
 }
 
 // -------- TELEGRAM HANDLERS ----------
@@ -222,6 +245,8 @@ bot.on('document', async (msg) => {
     const file = await bot.getFile(fileId);
     const fileUrl = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${file.file_path}`;
     
+    console.log(`Downloading file: ${fileUrl}`);
+    
     // Download file
     const https = await import('https');
     const fileStream = fs.createWriteStream(filePath);
@@ -236,6 +261,8 @@ bot.on('document', async (msg) => {
       }).on('error', reject);
     });
     
+    console.log('File downloaded successfully');
+    
     // Extract text
     const text = await extractTextFromPDF(filePath);
     
@@ -243,6 +270,8 @@ bot.on('document', async (msg) => {
       await bot.sendMessage(chatId, '⚠️ Could not extract text from PDF. Please ensure the file is readable.');
       return;
     }
+    
+    console.log('Text extracted, sending to AI...');
     
     // Process with AI
     const result = await extractDispatchInfoWithAI(text);
@@ -272,6 +301,8 @@ bot.on('photo', async (msg) => {
     const file = await bot.getFile(fileId);
     const fileUrl = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${file.file_path}`;
     
+    console.log(`Downloading image: ${fileUrl}`);
+    
     // Download file
     const https = await import('https');
     const fileStream = fs.createWriteStream(filePath);
@@ -286,6 +317,8 @@ bot.on('photo', async (msg) => {
       }).on('error', reject);
     });
     
+    console.log('Image downloaded, starting OCR...');
+    
     // Extract text using OCR
     const text = await extractTextFromImage(filePath);
     
@@ -293,6 +326,8 @@ bot.on('photo', async (msg) => {
       await bot.sendMessage(chatId, '⚠️ Could not extract text from image. Please ensure the image is clear and readable.');
       return;
     }
+    
+    console.log('OCR completed, sending to AI...');
     
     // Process with AI
     const result = await extractDispatchInfoWithAI(text);
@@ -309,10 +344,15 @@ bot.on('photo', async (msg) => {
   }
 });
 
+// Create temp directory if it doesn't exist
+if (!fs.existsSync('./temp')) {
+  fs.mkdirSync('./temp');
+}
+
 // -------- START SERVER ----------
 const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🌐 Flask server started on port ${PORT}`);
+  console.log(`🌐 Server started on port ${PORT}`);
   console.log('🤖 Bot is running... Send /start or a PDF in Telegram.');
 });
