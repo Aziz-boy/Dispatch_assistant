@@ -12,6 +12,9 @@ from telegram.ext import (
 )
 from threading import Thread
 from flask import Flask
+from PIL import Image
+import pytesseract
+import fitz  # PyMuPDF
 
 load_dotenv()
 
@@ -45,13 +48,73 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(welcome_message, parse_mode="Markdown")
 
-# -------- PDF TEXT EXTRACTION ----------
+# -------- OCR FOR IMAGES ----------
+def extract_text_from_image(image_path):
+    """Extract text from image using OCR"""
+    try:
+        image = Image.open(image_path)
+        text = pytesseract.image_to_string(image, lang='eng')
+        return text.strip()
+    except Exception as e:
+        print(f"OCR Error: {e}")
+        return ""
+
+# -------- ENHANCED PDF TEXT EXTRACTION WITH OCR ----------
 def extract_text_from_pdf(pdf_path):
+    """
+    Extract text from PDF with automatic OCR fallback for image-based PDFs
+    """
     text = ""
-    with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            text += page.extract_text() or ""
+    
+    # First, try pdfplumber for text-based PDFs
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                page_text = page.extract_text() or ""
+                text += page_text
+    except Exception as e:
+        print(f"PDFPlumber error: {e}")
+    
+    # If very little text was extracted, it's likely an image-based PDF
+    # Use OCR with PyMuPDF
+    if len(text.strip()) < 100:
+        print("⚠️ Minimal text detected. Using OCR...")
+        text = extract_text_from_pdf_with_ocr(pdf_path)
+    
     return text.strip()
+
+def extract_text_from_pdf_with_ocr(pdf_path):
+    """
+    Extract text from image-based PDF using OCR
+    """
+    text = ""
+    try:
+        doc = fitz.open(pdf_path)
+        
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            
+            # Convert PDF page to image
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x zoom for better quality
+            img_data = pix.tobytes("png")
+            
+            # Save temporarily and OCR
+            temp_img = f"temp_page_{page_num}.png"
+            with open(temp_img, "wb") as f:
+                f.write(img_data)
+            
+            # Extract text using OCR
+            page_text = extract_text_from_image(temp_img)
+            text += f"\n--- Page {page_num + 1} ---\n{page_text}\n"
+            
+            # Clean up temp image
+            os.remove(temp_img)
+        
+        doc.close()
+    except Exception as e:
+        print(f"OCR PDF Error: {e}")
+    
+    return text
 
 # -------- OPENAI DISPATCH EXTRACTION ----------
 def extract_dispatch_info_with_ai(text):
@@ -124,19 +187,25 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await file.download_to_drive(file_path)
 
     try:
-        text = extract_text_from_pdf(file_path)
         await update.message.reply_text("📄 PDF received. Extracting info... Please wait ⏳")
+        
+        text = extract_text_from_pdf(file_path)
+        
+        if not text or len(text) < 50:
+            await update.message.reply_text("⚠️ Could not extract text from PDF. Please ensure the file is readable.")
+            return
 
         result = extract_dispatch_info_with_ai(text)
 
-        # Send back the result directly without code block formatting
+        # Send back the result
         await update.message.reply_text(result)
 
     except Exception as e:
         await update.message.reply_text(f"⚠️ Error: {e}")
 
     finally:
-        os.remove(file_path)
+        if os.path.exists(file_path):
+            os.remove(file_path)
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file = await update.message.photo[-1].get_file()
@@ -144,9 +213,24 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await file.download_to_drive(file_path)
 
     try:
-        await update.message.reply_text("📷 Image received. OCR extraction not implemented yet. Send as PDF for full parsing.")
+        await update.message.reply_text("📷 Image received. Extracting text with OCR... Please wait ⏳")
+        
+        # Extract text from image using OCR
+        text = extract_text_from_image(file_path)
+        
+        if not text or len(text) < 50:
+            await update.message.reply_text("⚠️ Could not extract text from image. Please ensure the image is clear and readable.")
+            return
+        
+        # Process with AI
+        result = extract_dispatch_info_with_ai(text)
+        await update.message.reply_text(result)
+        
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ Error processing image: {e}")
     finally:
-        os.remove(file_path)
+        if os.path.exists(file_path):
+            os.remove(file_path)
         
 # -------- RUN FLASK IN BACKGROUND THREAD ----------
 def run_flask():
