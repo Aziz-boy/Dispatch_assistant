@@ -7,7 +7,10 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import pdfParse from 'pdf-parse';
 import Tesseract from 'tesseract.js';
-import pdf2img from 'pdf2img';
+import pdfjsLib from 'pdfjs-dist';
+import { createCanvas } from 'canvas';
+
+const { getDocument } = pdfjsLib;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -53,11 +56,28 @@ Need help? Type /help`;
 // -------- OCR FOR IMAGES ----------
 async function extractTextFromImage(imagePath) {
   try {
-    console.log(`Starting OCR on: ${imagePath}`);
+    console.log(`=== STARTING OCR ===`);
+    console.log(`Image path: ${imagePath}`);
+    console.log(`File exists: ${fs.existsSync(imagePath)}`);
+    
+    if (fs.existsSync(imagePath)) {
+      const stats = fs.statSync(imagePath);
+      console.log(`File size: ${stats.size} bytes`);
+    }
+    
     const { data: { text } } = await Tesseract.recognize(imagePath, 'eng', {
-      logger: info => console.log(info)
+      logger: info => {
+        if (info.status === 'recognizing text') {
+          console.log(`OCR Progress: ${Math.round(info.progress * 100)}%`);
+        }
+      }
     });
+    
     console.log(`OCR completed. Text length: ${text.length}`);
+    console.log('First 200 characters of OCR text:');
+    console.log(text.substring(0, 200));
+    console.log('===================');
+    
     return text.trim();
   } catch (error) {
     console.error('OCR Error:', error);
@@ -68,19 +88,32 @@ async function extractTextFromImage(imagePath) {
 // -------- PDF TEXT EXTRACTION ----------
 async function extractTextFromPDF(pdfPath) {
   try {
+    console.log('=== PDF TEXT EXTRACTION ===');
+    console.log('PDF path:', pdfPath);
+    console.log('File exists:', fs.existsSync(pdfPath));
+    
+    if (fs.existsSync(pdfPath)) {
+      const stats = fs.statSync(pdfPath);
+      console.log('File size:', stats.size, 'bytes');
+    }
+    
     console.log('Attempting to extract text from PDF...');
     const dataBuffer = fs.readFileSync(pdfPath);
     const data = await pdfParse(dataBuffer);
     const text = data.text.trim();
     
     console.log(`Extracted text length: ${text.length}`);
+    console.log('First 300 characters:');
+    console.log(text.substring(0, 300));
     
     // If very little text was extracted, it's likely an image-based PDF
     if (text.length < 100) {
-      console.log('⚠️ Minimal text detected. Using OCR...');
+      console.log('⚠️ Minimal text detected (<100 chars). Using OCR...');
       return await extractTextFromPDFWithOCR(pdfPath);
     }
     
+    console.log('✓ Text extraction successful');
+    console.log('===========================');
     return text;
   } catch (error) {
     console.error('PDF Parse Error:', error);
@@ -92,50 +125,56 @@ async function extractTextFromPDF(pdfPath) {
 // -------- PDF OCR EXTRACTION ----------
 async function extractTextFromPDFWithOCR(pdfPath) {
   try {
-    console.log('Converting PDF pages to PNG...');
+    console.log('Converting PDF pages to images using PDF.js...');
     
-    // Create temp directory if it doesn't exist
-    if (!fs.existsSync('./temp')) {
-      fs.mkdirSync('./temp');
-    }
-    
-    // Convert PDF to images using pdf2img
-    const result = await new Promise((resolve, reject) => {
-      pdf2img.setOptions({
-        type: 'png',
-        size: 2000,
-        density: 300,
-        outputdir: './temp',
-        outputname: 'page',
-        page: null
-      });
-      
-      pdf2img.convert(pdfPath, (err, info) => {
-        if (err) reject(err);
-        else resolve(info);
-      });
+    // Read PDF file
+    const data = new Uint8Array(fs.readFileSync(pdfPath));
+    const loadingTask = getDocument({
+      data: data,
+      useSystemFonts: true,
+      standardFontDataUrl: 'node_modules/pdfjs-dist/standard_fonts/'
     });
+    const pdf = await loadingTask.promise;
     
-    console.log(`Converted ${result.length} pages to PNG`);
+    console.log(`PDF has ${pdf.numPages} pages`);
     
     let fullText = '';
     
-    // Process each page with OCR
-    for (let i = 0; i < result.length; i++) {
+    // Process each page
+    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
       try {
-        const imagePath = result[i].path;
-        console.log(`Processing page ${i + 1} with OCR: ${imagePath}`);
+        const page = await pdf.getPage(pageNum);
+        const viewport = page.getViewport({ scale: 2.0 });
+        
+        // Create canvas
+        const canvas = createCanvas(viewport.width, viewport.height);
+        const context = canvas.getContext('2d');
+        
+        // Render PDF page to canvas
+        await page.render({
+          canvasContext: context,
+          viewport: viewport
+        }).promise;
+        
+        // Convert canvas to image buffer
+        const imageBuffer = canvas.toBuffer('image/png');
+        
+        // Save temporarily for OCR
+        const tempImagePath = path.join(__dirname, `temp_page_${pageNum}.png`);
+        fs.writeFileSync(tempImagePath, imageBuffer);
+        
+        console.log(`Processing page ${pageNum} with OCR: ${tempImagePath}`);
         
         // Extract text using OCR
-        const pageText = await extractTextFromImage(imagePath);
-        fullText += `\n--- Page ${i + 1} ---\n${pageText}\n`;
+        const pageText = await extractTextFromImage(tempImagePath);
+        fullText += `\n--- Page ${pageNum} ---\n${pageText}\n`;
         
         // Clean up temp image
-        if (fs.existsSync(imagePath)) {
-          fs.unlinkSync(imagePath);
+        if (fs.existsSync(tempImagePath)) {
+          fs.unlinkSync(tempImagePath);
         }
       } catch (err) {
-        console.error(`Error processing page ${i + 1}:`, err);
+        console.error(`Error processing page ${pageNum}:`, err);
       }
     }
     
