@@ -1,14 +1,16 @@
 services:
   - type: web
     name: dispatch-assistant-bot
-    env: python
-    runtime: python-3.11
+    env: node
+    runtime: node
     buildCommand: |
-      apt-get update && apt-get install -y tesseract-ocr tesseract-ocr-eng
-      pip install -r requirements.txt
-    startCommand: python dispatch_bot.py
+      apt-get update && apt-get install -y tesseract-ocr tesseract-ocr-eng graphicsmagick
+      npm install
+    startCommand: npm start
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: OPENAI_API_KEY
         sync: false
+      - key: NODE_ENV
+        value: production
